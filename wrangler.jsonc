@@ -2,5 +2,12 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "referencehub",
   "compatibility_date": "2025-08-03",
-  "main": "./src/index.tsx"
+  "main": "./src/index.tsx",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "referencehub",
+      "database_id": "32b90fbc-8de1-4155-8de0-d32cbb3f04bb"
+    }
+  ]
 }
