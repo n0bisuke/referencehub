@@ -1,11 +1,45 @@
-```txt
+## Setup
+
+```bash
 npm install
+```
+
+## Database Migrations
+
+This project uses Cloudflare D1 with migrations for database schema management.
+
+### Local Development
+
+Run migrations on local D1 database:
+```bash
+npm run d1:migrate:local
+```
+
+Start development server (automatically runs local migrations):
+```bash
 npm run dev
 ```
 
-```txt
+### Production Deployment
+
+Deploy to Cloudflare Workers (automatically runs remote migrations):
+```bash
 npm run deploy
 ```
+
+Or run migrations manually on production:
+```bash
+npm run d1:migrate
+```
+
+### Adding New Migrations
+
+1. Create a new migration file in `migrations/` directory
+2. Name it sequentially (e.g., `0003_description.sql`)
+3. Test locally with `npm run d1:migrate:local`
+4. Deploy with `npm run deploy`
+
+**Note**: Never modify existing migration files. Always create new ones for schema changes
 
 [For generating/synchronizing types based on your Worker configuration run](https://developers.cloudflare.com/workers/wrangler/commands/#types):
 

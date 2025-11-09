@@ -33,12 +33,12 @@
    - Cronトリガーで古い素材のアーカイブ提案・容量アラート、参照切れデータのクリーンアップ。
 
 ## 5. URLアーカイブMVP計画
-- **目的**: 「URLを入力→対象ページのメタデータ・サムネイルを保存して後から参照できる」体験を最初のマイルストーンとする。
+- **目的**: 「URLを入力→対象ページのメタデータ・サムネイル＋利用文脈を保存して後から参照できる」体験を最初のマイルストーンとする。
 - **技術スタック**: 既存のHono + Cloudflare Workers + Viteテンプレートを継続利用し、フロントはURL入力フォームと履歴リスト、APIは `/api/archive` などのエンドポイントを追加。
 - **処理フロー**  
   1. フロントからURLをPOST。  
   2. Workers(Hono)がURLバリデーション → メタデータ取得（`fetch` + HTMLパース / oEmbed / OGP）。  
-  3. タイトル、説明、OG画像URL、HTTPステータス、ハッシュ、送信者IDをD1に保存。重複URLはハッシュで検知。  
+  3. タイトル、説明、OG画像URL、HTTPステータス、ハッシュ、送信者IDに加え、「発表で利用したスライドURL（任意）」「どんな文脈で利用したかコメント（必須）」をD1に保存。重複URLはハッシュで検知。  
   4. サムネイル画像はCloudflare Images Transformationsで生成またはOG画像をR2に転送し、結果URLをD1/KVに保持。  
   5. フロントは `/api/archives` で取得し、カードUIで表示。  
 - **バックログ**: スクリーンショット取得（Browser Rendering API）、テキスト全文保存（Vectorize連携）、タグ自動付与（LLM or ルールベース）。
@@ -70,9 +70,9 @@
 - 利用増加時にはWorkers Paidプラン（$5/月〜）へ移行し、必要に応じてQueuesやWorkflowsで非同期処理を構築。
 
 ## 10. 次ステップ
-1. `/api/archive` → D1書き込み：HonoでURLバリデーション→D1挿入→結果返却までを実装し、UIフォーム＆API双方から利用できるようにする。
-2. `/api/archives` のD1化：検索クエリ・タグフィルタをSQLのLIKE/JSON検索で実装し、最新100件＋総件数を返す。
-3. 投稿モーダル改善：モーダル起動ボタンとクローズ操作をノーライブラリJSで安定化（`dialog.showModal()` フォールバックやQuery Param対応）。
-4. Notion同期下準備：D1に `synced_to_notion`/`synced_at` 列を追加し、Cron Workerの共通ライブラリを作成。
-5. 静的アーカイブPoC：D1 → JSONファイル生成スクリプトを実装し、Pages `public/archives-latest.json` を更新するバッチを検証。
+1. `/api/archive` → D1書き込み：HonoでURL／タグ／文脈コメント必須・スライドURL任意のバリデーションを実装し、D1挿入→結果返却までを整備。
+2. `/api/archives` のD1化：検索クエリ・タグ・文脈コメントをSQL LIKEで検索し、最新100件＋総件数を返す。
+3. 投稿モーダル改善：新入力項目（スライドURL／文脈コメント／任意メモ）をUIへ追加し、必須表示やエラーメッセージを整理。
+4. Notion同期下準備：D1に `synced_to_notion`/`synced_at` 列を追加し、スライドURL・文脈コメントを含めたバッチAPIを設計。
+5. 静的アーカイブPoC：D1 → JSONエクスポートに追加フィールドを含め、Pages `public/archives-latest.json` を更新するバッチを検証。
 6. 認証基盤（Phase 1）：メールリンク/OTPログインを組み込み、ユーザーID・投稿者紐付けを開始。

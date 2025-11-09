@@ -8,10 +8,13 @@ type Bindings = {
 type Entry = {
   id: string
   url: string
-  note: string
+  note?: string
+  context: string
+  slideUrl?: string
   hostname: string
   createdAt: string
   tags: string[]
+  tweetEmbedHtml?: string
 }
 
 const RECENT_LIMIT = 100
@@ -55,12 +58,15 @@ const validateTags = (raw: string) => {
   return { ok: true, tags } as const
 }
 
-const validateInput = (urlInput: unknown, noteInput: unknown, tagsInput: unknown) => {
+const validateInput = (
+  urlInput: unknown,
+  noteInput: unknown,
+  contextInput: unknown,
+  slideUrlInput: unknown,
+  tagsInput: unknown
+) => {
   if (typeof urlInput !== 'string' || urlInput.trim().length === 0) {
     return { ok: false, error: 'URLを入力してください。' } as const
-  }
-  if (typeof noteInput !== 'string' || noteInput.trim().length === 0) {
-    return { ok: false, error: 'メモを入力してください。' } as const
   }
 
   try {
@@ -69,8 +75,27 @@ const validateInput = (urlInput: unknown, noteInput: unknown, tagsInput: unknown
     return { ok: false, error: '正しいURL形式で入力してください。' } as const
   }
 
-  if (noteInput.trim().length > 500) {
+  const noteValue = typeof noteInput === 'string' ? noteInput.trim() : ''
+  if (noteValue.length > 500) {
     return { ok: false, error: 'メモは500文字以内で入力してください。' } as const
+  }
+
+  if (typeof contextInput !== 'string' || contextInput.trim().length === 0) {
+    return { ok: false, error: 'どんな文脈で利用したかを入力してください。' } as const
+  }
+
+  const contextValue = contextInput.trim()
+  if (contextValue.length > 500) {
+    return { ok: false, error: '文脈コメントは500文字以内で入力してください。' } as const
+  }
+
+  let slideUrlValue: string | undefined
+  if (typeof slideUrlInput === 'string' && slideUrlInput.trim().length > 0) {
+    try {
+      slideUrlValue = normalizeUrl(slideUrlInput)
+    } catch {
+      return { ok: false, error: 'スライドURLが正しい形式ではありません。' } as const
+    }
   }
 
   const tagsResult = validateTags(parseTags(tagsInput))
@@ -82,7 +107,9 @@ const validateInput = (urlInput: unknown, noteInput: unknown, tagsInput: unknown
     ok: true,
     data: {
       url: urlInput.trim(),
-      note: noteInput.trim(),
+      note: noteValue.length > 0 ? noteValue : undefined,
+      context: contextValue,
+      slideUrl: slideUrlValue,
       tags: tagsResult.tags,
     },
   } as const
@@ -100,8 +127,10 @@ const filterEntries = (entries: Entry[], query?: string) => {
   return entries.filter((entry) => {
     return (
       entry.url.toLowerCase().includes(lower) ||
-      entry.note.toLowerCase().includes(lower) ||
+      (entry.note ?? '').toLowerCase().includes(lower) ||
+      entry.context.toLowerCase().includes(lower) ||
       entry.hostname.toLowerCase().includes(lower) ||
+      (entry.slideUrl ?? '').toLowerCase().includes(lower) ||
       entry.tags.some((tag) => tag.toLowerCase().includes(lower))
     )
   })
@@ -118,10 +147,13 @@ const mapRowToEntry = (row: Record<string, unknown>): Entry => {
   return {
     id: String(row.id),
     url: String(row.url),
-    note: String(row.note ?? ''),
+    note: row.note ? String(row.note) : undefined,
+    context: String(row.context ?? ''),
+    slideUrl: row.slide_url ? String(row.slide_url) : undefined,
     hostname: String(row.hostname ?? ''),
     createdAt: String(row.created_at ?? new Date().toISOString()),
     tags,
+    tweetEmbedHtml: row.tweet_embed_html ? String(row.tweet_embed_html) : undefined,
   }
 }
 
@@ -130,8 +162,8 @@ const buildSearchWhere = (query?: string) => {
     return { clause: '', params: [] as string[] }
   }
   const like = `%${query}%`
-  const clause = 'WHERE url LIKE ? OR note LIKE ? OR hostname LIKE ? OR tags LIKE ?'
-  const params = [like, like, like, like]
+  const clause = 'WHERE url LIKE ? OR IFNULL(note, "") LIKE ? OR context LIKE ? OR hostname LIKE ? OR tags LIKE ? OR IFNULL(slide_url, "") LIKE ?'
+  const params = [like, like, like, like, like, like]
   return { clause, params }
 }
 
@@ -144,7 +176,7 @@ const getEntries = async (db: D1Database | undefined, query?: string) => {
     const stmt = db
       .prepare(
         `
-        SELECT id, url, note, hostname, tags, created_at
+        SELECT id, url, note, context, slide_url, hostname, tags, created_at, tweet_embed_html
         FROM entries
         ${clause}
         ORDER BY datetime(created_at) DESC
@@ -179,16 +211,47 @@ const pushMemoryEntry = (entry: Entry) => {
   }
 }
 
-const insertEntry = async (db: D1Database | undefined, url: string, note: string, tags: string[]) => {
+const fetchTweetEmbed = async (url: string): Promise<string | undefined> => {
+  const isTwitterUrl = /^https?:\/\/(twitter\.com|x\.com)\/\w+\/status\/\d+/.test(url)
+  if (!isTwitterUrl) return undefined
+
+  try {
+    const oembedUrl = `https://publish.twitter.com/oembed?url=${encodeURIComponent(url)}&maxwidth=500`
+    const response = await fetch(oembedUrl)
+    if (!response.ok) return undefined
+
+    const data = await response.json() as { html?: string }
+    return data.html
+  } catch (error) {
+    console.error('Failed to fetch tweet embed', error)
+    return undefined
+  }
+}
+
+const insertEntry = async (
+  db: D1Database | undefined,
+  url: string,
+  note: string | undefined,
+  context: string,
+  slideUrl: string | undefined,
+  tags: string[]
+) => {
   const normalizedUrl = normalizeUrl(url)
   const hostname = new URL(normalizedUrl).hostname
+
+  // Fetch tweet embed if it's a Twitter/X URL
+  const tweetEmbedHtml = await fetchTweetEmbed(normalizedUrl)
+
   const entry: Entry = {
     id: crypto.randomUUID(),
     url: normalizedUrl,
     note,
+    context,
+    slideUrl,
     hostname,
     createdAt: new Date().toISOString(),
     tags,
+    tweetEmbedHtml,
   }
 
   if (!db) {
@@ -200,11 +263,21 @@ const insertEntry = async (db: D1Database | undefined, url: string, note: string
     await db
       .prepare(
         `
-        INSERT INTO entries (id, url, note, hostname, tags, created_at, synced_to_notion)
-        VALUES (?, ?, ?, ?, ?, ?, 0)
+        INSERT INTO entries (id, url, note, context, slide_url, hostname, tags, created_at, synced_to_notion, tweet_embed_html)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
       `
       )
-      .bind(entry.id, entry.url, entry.note, entry.hostname, JSON.stringify(entry.tags), entry.createdAt)
+      .bind(
+        entry.id,
+        entry.url,
+        entry.note ?? '',
+        entry.context,
+        entry.slideUrl ?? null,
+        entry.hostname,
+        JSON.stringify(entry.tags),
+        entry.createdAt,
+        entry.tweetEmbedHtml ?? null
+      )
       .run()
   } catch (error) {
     console.error('insertEntry failed', error)
@@ -230,6 +303,8 @@ const Home = ({
   defaults?: {
     url?: string
     note?: string
+    context?: string
+    slideUrl?: string
     tags?: string
   }
   query?: string
@@ -290,18 +365,65 @@ const Home = ({
                   <span class="entry__host">{entry.hostname}</span>
                   <time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString('ja-JP')}</time>
                 </div>
-                <a class="entry__link" href={entry.url} target="_blank" rel="noopener noreferrer">
-                  {entry.url}
-                </a>
-                <p class="entry__note">{entry.note}</p>
-                {entry.tags.length > 0 && (
-                  <ul class="tag-list">
-                    {entry.tags.map((tag) => (
-                      <li class="tag" key={`${entry.id}-${tag}`}>
-                        #{tag}
-                      </li>
-                    ))}
-                  </ul>
+                {entry.tweetEmbedHtml ? (
+                  <div class="entry__content-split">
+                    <div class="entry__left">
+                      <div
+                        class="tweet-embed"
+                        dangerouslySetInnerHTML={{ __html: entry.tweetEmbedHtml }}
+                      />
+                    </div>
+                    <div class="entry__right">
+                      <div class="entry__context">
+                        <span class="entry__context-label">利用文脈</span>
+                        <p>{entry.context}</p>
+                      </div>
+                      {entry.slideUrl && (
+                        <p class="entry__slide">
+                          <a href={entry.slideUrl} target="_blank" rel="noopener noreferrer">
+                            発表スライドを見る
+                          </a>
+                        </p>
+                      )}
+                      {entry.note && <p class="entry__note">{entry.note}</p>}
+                      {entry.tags.length > 0 && (
+                        <ul class="tag-list">
+                          {entry.tags.map((tag) => (
+                            <li class="tag" key={`${entry.id}-${tag}`}>
+                              #{tag}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <a class="entry__link" href={entry.url} target="_blank" rel="noopener noreferrer">
+                      {entry.url}
+                    </a>
+                    <div class="entry__context">
+                      <span class="entry__context-label">利用文脈</span>
+                      <p>{entry.context}</p>
+                    </div>
+                    {entry.slideUrl && (
+                      <p class="entry__slide">
+                        <a href={entry.slideUrl} target="_blank" rel="noopener noreferrer">
+                          発表スライドを見る
+                        </a>
+                      </p>
+                    )}
+                    {entry.note && <p class="entry__note">{entry.note}</p>}
+                    {entry.tags.length > 0 && (
+                      <ul class="tag-list">
+                        {entry.tags.map((tag) => (
+                          <li class="tag" key={`${entry.id}-${tag}`}>
+                            #{tag}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
                 )}
               </li>
             ))}
@@ -334,8 +456,32 @@ const Home = ({
             />
           </label>
           <label>
-            メモ
-            <textarea name="note" rows={3} placeholder="どんな内容かメモを残しましょう。" required>{defaults?.note ?? ''}</textarea>
+            どんな文脈で利用しましたか？
+            <textarea
+              name="context"
+              rows={3}
+              placeholder="例：LTイベントでAI×デザインの事例として紹介しました。"
+              required
+              defaultValue={defaults?.context ?? ''}
+            />
+          </label>
+          <label>
+            どんな発表で利用したか？（スライドURL 任意）
+            <input
+              type="url"
+              name="slideUrl"
+              placeholder="https://speakerdeck.com/... (任意)"
+              value={defaults?.slideUrl ?? ''}
+            />
+          </label>
+          <label>
+            メモ（任意）
+            <textarea
+              name="note"
+              rows={3}
+              placeholder="補足メモがあれば書いておきましょう。"
+              defaultValue={defaults?.note ?? ''}
+            />
           </label>
           <label>
             タグ（カンマ区切りで最大5件）
@@ -352,9 +498,10 @@ const Home = ({
     </dialog>
     <script
       dangerouslySetInnerHTML={{
-        __html: `(function(){function init(){if(typeof window==="undefined"||typeof document==="undefined")return;if(typeof HTMLDialogElement==="undefined")return;var modal=document.getElementById("entry-modal");if(!modal||!(modal instanceof HTMLDialogElement))return;var openButtons=document.querySelectorAll("[data-open-modal]");var closeButtons=document.querySelectorAll("[data-close-modal]");function openModal(event){if(event&&event.preventDefault)event.preventDefault();modal.showModal()}function closeModal(event){if(event&&event.preventDefault)event.preventDefault();modal.close()}openButtons.forEach(function(button){button.addEventListener("click",openModal)});closeButtons.forEach(function(button){button.addEventListener("click",closeModal)});modal.addEventListener("click",function(event){if(event.target===modal){modal.close()}});document.addEventListener("keydown",function(event){if(event.key==="Escape"&&modal.open){modal.close()}});if(modal.dataset.forceOpen==="true"){modal.showModal();delete modal.dataset.forceOpen}}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",init,{once:true})}else{init()}})();`,
+        __html: `(function(){function init(){if(typeof window==="undefined"||typeof document==="undefined")return;if(typeof HTMLDialogElement==="undefined")return;var modal=document.getElementById("entry-modal");if(!modal||!(modal instanceof HTMLDialogElement))return;var openButtons=document.querySelectorAll("[data-open-modal]");var closeButtons=document.querySelectorAll("[data-close-modal]");function openModal(event){if(event&&event.preventDefault)event.preventDefault();modal.showModal()}function closeModal(event){if(event&&event.preventDefault)event.preventDefault();modal.close()}openButtons.forEach(function(button){button.addEventListener("click",openModal)});closeButtons.forEach(function(button){button.addEventListener("click",closeModal)});modal.addEventListener("click",function(event){if(event.target===modal){modal.close()}});document.addEventListener("keydown",function(event){if(event.key==="Escape"&&modal.open){modal.close()}});if(modal.dataset.forceOpen==="true"){modal.showModal();delete modal.dataset.forceOpen}var urlInput=document.querySelector('input[name="url"]');var contextInput=document.querySelector('textarea[name="context"]');var noteInput=document.querySelector('textarea[name="note"]');if(urlInput&&contextInput){var debounceTimer=null;function extractTweetText(html){try{var parser=new DOMParser();var doc=parser.parseFromString(html,"text/html");var blockquote=doc.querySelector("blockquote");if(!blockquote)return null;var paragraphs=blockquote.querySelectorAll("p");if(paragraphs.length===0)return null;var text=paragraphs[0].textContent||"";return text.trim()}catch(e){console.error("Failed to parse tweet HTML",e);return null}}function handleUrlChange(){var url=urlInput.value.trim();if(!url)return;var isTwitterUrl=/^https?:\\/\\/(twitter\\.com|x\\.com)\\/\\w+\\/status\\/\\d+/.test(url);if(!isTwitterUrl)return;if(contextInput.value.trim()!=="")return;var oembedUrl="/api/oembed?url="+encodeURIComponent(url);fetch(oembedUrl).then(function(response){if(!response.ok)throw new Error("Failed to fetch oembed");return response.json()}).then(function(data){if(contextInput.value.trim()!=="")return;var tweetText=data.html?extractTweetText(data.html):null;if(tweetText){contextInput.value=data.author_name+"さんの投稿「"+tweetText+"」を参照しました。"}else if(data.author_name){contextInput.value=data.author_name+"さんの投稿を参照しました。"}}).catch(function(error){console.log("oEmbed fetch error:",error)})}urlInput.addEventListener("blur",function(){if(debounceTimer){clearTimeout(debounceTimer)}debounceTimer=setTimeout(handleUrlChange,300)})}}if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",init,{once:true})}else{init()}})();`,
       }}
     />
+    <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
   </>
 )
 
@@ -370,7 +517,7 @@ app.get('/', async (c) => {
 
 app.post('/entries', async (c) => {
   const formData = await c.req.parseBody()
-  const result = validateInput(formData.url, formData.note, formData.tags)
+  const result = validateInput(formData.url, formData.note, formData.context, formData.slideUrl, formData.tags)
 
   if (!result.ok) {
     const db = c.env.DB
@@ -383,6 +530,8 @@ app.post('/entries', async (c) => {
         defaults={{
           url: typeof formData.url === 'string' ? formData.url : '',
           note: typeof formData.note === 'string' ? formData.note : '',
+          context: typeof formData.context === 'string' ? formData.context : '',
+          slideUrl: typeof formData.slideUrl === 'string' ? formData.slideUrl : '',
           tags: typeof formData.tags === 'string' ? formData.tags : '',
         }}
         showModal
@@ -392,7 +541,14 @@ app.post('/entries', async (c) => {
   }
 
   try {
-    await insertEntry(c.env.DB, result.data.url, result.data.note, result.data.tags)
+    await insertEntry(
+      c.env.DB,
+      result.data.url,
+      result.data.note,
+      result.data.context,
+      result.data.slideUrl,
+      result.data.tags
+    )
   } catch (error) {
     console.error('Failed to insert entry', error)
     const db = c.env.DB
@@ -405,6 +561,8 @@ app.post('/entries', async (c) => {
         defaults={{
           url: typeof formData.url === 'string' ? formData.url : '',
           note: typeof formData.note === 'string' ? formData.note : '',
+          context: typeof formData.context === 'string' ? formData.context : '',
+          slideUrl: typeof formData.slideUrl === 'string' ? formData.slideUrl : '',
           tags: typeof formData.tags === 'string' ? formData.tags : '',
         }}
         showModal
@@ -431,18 +589,55 @@ app.post('/api/entries', async (c) => {
   }
 
   const record = typeof payload === 'object' && payload !== null ? (payload as Record<string, unknown>) : {}
-  const result = validateInput(record.url, record.note, record.tags)
+  const result = validateInput(record.url, record.note, record.context, record.slideUrl, record.tags)
 
   if (!result.ok) {
     return c.json({ error: result.error }, 400)
   }
 
   try {
-    const entry = await insertEntry(c.env.DB, result.data.url, result.data.note, result.data.tags)
+    const entry = await insertEntry(
+      c.env.DB,
+      result.data.url,
+      result.data.note,
+      result.data.context,
+      result.data.slideUrl,
+      result.data.tags
+    )
     return c.json(entry, 201)
   } catch (error) {
     console.error('Failed to insert entry via API', error)
     return c.json({ error: '保存に失敗しました。' }, 500)
+  }
+})
+
+app.get('/api/oembed', async (c) => {
+  const targetUrl = c.req.query('url')
+
+  if (!targetUrl || typeof targetUrl !== 'string') {
+    return c.json({ error: 'URLパラメータが必要です。' }, 400)
+  }
+
+  // Check if it's a Twitter/X URL
+  const isTwitterUrl = /^https?:\/\/(twitter\.com|x\.com)\/\w+\/status\/\d+/.test(targetUrl)
+
+  if (!isTwitterUrl) {
+    return c.json({ error: 'Twitter/XのURLのみサポートしています。' }, 400)
+  }
+
+  try {
+    const oembedUrl = `https://publish.twitter.com/oembed?url=${encodeURIComponent(targetUrl)}&maxwidth=500`
+    const response = await fetch(oembedUrl)
+
+    if (!response.ok) {
+      return c.json({ error: 'oEmbed APIの呼び出しに失敗しました。' }, response.status)
+    }
+
+    const data = await response.json()
+    return c.json(data)
+  } catch (error) {
+    console.error('oEmbed API error', error)
+    return c.json({ error: 'oEmbed APIの呼び出し中にエラーが発生しました。' }, 500)
   }
 })
 

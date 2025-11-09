@@ -1,21 +1,13 @@
--- ⚠️ NOTE: This file is for reference only.
--- DO NOT use this file directly for migrations.
--- Use the migration files in ./migrations/ directory instead.
--- Run: npm run d1:migrate:local (for local) or npm run d1:migrate (for production)
-
--- Current schema (reference only)
+-- Migration 0001: Initial schema
 CREATE TABLE IF NOT EXISTS entries (
   id TEXT PRIMARY KEY,
   url TEXT NOT NULL,
-  note TEXT,
-  context TEXT NOT NULL,
-  slide_url TEXT,
+  note TEXT NOT NULL,
   hostname TEXT NOT NULL,
   tags TEXT NOT NULL DEFAULT '[]',
   created_at TEXT NOT NULL,
   synced_to_notion INTEGER NOT NULL DEFAULT 0,
-  synced_at TEXT,
-  tweet_embed_html TEXT
+  synced_at TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_entries_created_at ON entries (datetime(created_at) DESC);

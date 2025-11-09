@@ -2,13 +2,13 @@
   "name": "referencehub",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "npm run d1:migrate:local && vite",
     "build": "vite build",
     "preview": "$npm_execpath run build && vite preview",
-    "deploy": "$npm_execpath run build && wrangler deploy",
+    "deploy": "$npm_execpath run build && npm run d1:migrate && wrangler deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings",
-    "d1:migrate": "wrangler d1 execute referencehub --remote --file=schema.sql",
-    "d1:migrate:local": "wrangler d1 execute referencehub --local --file=schema.sql"
+    "d1:migrate": "wrangler d1 migrations apply referencehub --remote",
+    "d1:migrate:local": "wrangler d1 migrations apply referencehub --local"
   },
   "dependencies": {
     "hono": "^4.10.4"
